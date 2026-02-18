@@ -34,14 +34,21 @@ def write_store(data):
     STORE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
 
 
+def load_css():
+    if STATIC_STYLE.exists():
+        return STATIC_STYLE.read_text(encoding='utf-8')
+    return ''
+
+
 def page(title, body):
+    styles = load_css()
     return f'''<!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{title}</title>
-  <link rel="stylesheet" href="/static/style.css" />
+  <style>{styles}</style>
 </head>
 <body>
   <main class="container">{body}</main>
