@@ -3,16 +3,14 @@ import json
 import os
 import secrets
 from datetime import datetime
-from http import cookies
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs
+from wsgiref.simple_server import make_server
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / 'data'
 STORE_PATH = DATA_DIR / 'store.json'
-STYLE_PATH = BASE_DIR / 'public' / 'style.css'
-HOST = '0.0.0.0'
+STATIC_STYLE = BASE_DIR / 'static' / 'style.css'
 PORT = int(os.getenv('PORT', '3000'))
 
 sessions = {}
@@ -20,18 +18,9 @@ sessions = {}
 
 def ensure_store():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    (BASE_DIR / 'public').mkdir(parents=True, exist_ok=True)
     if not STORE_PATH.exists():
         STORE_PATH.write_text(
-            json.dumps(
-                {
-                    'sitePassword': '1234',
-                    'adminPassword': 'admin123',
-                    'notes': [],
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
+            json.dumps({'sitePassword': '1234', 'adminPassword': 'admin123', 'notes': []}, ensure_ascii=False, indent=2),
             encoding='utf-8',
         )
 
@@ -45,126 +34,98 @@ def write_store(data):
     STORE_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
 
 
-def page(title, body, footer='BySecret'):
+def page(title, body):
     return f'''<!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>{title}</title>
-  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
   <main class="container">{body}</main>
-  <footer>{footer}</footer>
+  <footer>BySecret</footer>
 </body>
 </html>'''.encode('utf-8')
 
 
-class NoteFluxHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        parsed = urlparse(self.path)
-        if parsed.path == '/style.css':
-            return self.serve_style()
-        if parsed.path == '/':
-            return self.login_page(parsed)
-        if parsed.path == '/notes':
-            return self.notes_page()
-        if parsed.path == '/admin/login':
-            return self.admin_login_page(parsed)
-        if parsed.path == '/admin':
-            return self.admin_page()
-        self.send_error(404)
+def parse_cookies(environ):
+    cookie_header = environ.get('HTTP_COOKIE', '')
+    pairs = [c.strip() for c in cookie_header.split(';') if '=' in c]
+    return {k.strip(): v.strip() for k, v in (p.split('=', 1) for p in pairs)}
 
-    def do_POST(self):
-        parsed = urlparse(self.path)
-        form = self.parse_form()
 
-        if parsed.path == '/login':
-            return self.login_action(form)
-        if parsed.path == '/logout':
-            return self.logout_action()
-        if parsed.path == '/notes/new':
-            return self.new_note_action(form)
-        if parsed.path.startswith('/notes/') and parsed.path.endswith('/save'):
-            return self.save_note_action(parsed.path, form)
-        if parsed.path == '/admin/login':
-            return self.admin_login_action(form)
-        if parsed.path == '/admin/logout':
-            return self.admin_logout_action()
-        if parsed.path.startswith('/admin/delete/'):
-            return self.admin_delete_note_action(parsed.path)
-        if parsed.path == '/admin/change-site-password':
-            return self.admin_change_site_password(form)
-        if parsed.path == '/admin/change-admin-password':
-            return self.admin_change_admin_password(form)
-        self.send_error(404)
+def get_session(environ):
+    sid = parse_cookies(environ).get('sid')
+    if sid in sessions:
+        return sid, sessions[sid], False
+    sid = secrets.token_hex(16)
+    sessions[sid] = {'siteAuthed': False, 'adminAuthed': False}
+    return sid, sessions[sid], True
 
-    def serve_style(self):
-        if not STYLE_PATH.exists():
-            self.send_error(404)
-            return
-        content = STYLE_PATH.read_bytes()
-        self.send_response(200)
-        self.send_header('Content-Type', 'text/css; charset=utf-8')
-        self.send_header('Content-Length', str(len(content)))
-        self.end_headers()
-        self.wfile.write(content)
 
-    def parse_form(self):
-        length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(length).decode('utf-8')
-        parsed = parse_qs(body)
-        return {k: (v[0] if v else '') for k, v in parsed.items()}
+def read_form(environ):
+    try:
+        length = int(environ.get('CONTENT_LENGTH') or 0)
+    except ValueError:
+        length = 0
+    raw = environ['wsgi.input'].read(length).decode('utf-8')
+    parsed = parse_qs(raw)
+    return {k: (v[0] if v else '') for k, v in parsed.items()}
 
-    def get_session(self):
-        jar = cookies.SimpleCookie(self.headers.get('Cookie'))
-        sid = jar['sid'].value if 'sid' in jar else None
-        if sid and sid in sessions:
-            return sid, sessions[sid]
-        sid = secrets.token_hex(16)
-        sessions[sid] = {'siteAuthed': False, 'adminAuthed': False}
-        return sid, sessions[sid]
 
-    def send_html(self, content, sid=None, code=200):
-        self.send_response(code)
-        self.send_header('Content-Type', 'text/html; charset=utf-8')
-        if sid:
-            self.send_header('Set-Cookie', f'sid={sid}; HttpOnly; Path=/; SameSite=Lax')
-        self.send_header('Content-Length', str(len(content)))
-        self.end_headers()
-        self.wfile.write(content)
+def response(start_response, body, status='200 OK', headers=None):
+    base_headers = [('Content-Type', 'text/html; charset=utf-8'), ('Content-Length', str(len(body)))]
+    if headers:
+        base_headers.extend(headers)
+    start_response(status, base_headers)
+    return [body]
 
-    def redirect(self, location, sid=None):
-        self.send_response(302)
-        self.send_header('Location', location)
-        if sid:
-            self.send_header('Set-Cookie', f'sid={sid}; HttpOnly; Path=/; SameSite=Lax')
-        self.end_headers()
 
-    def require_site_auth(self):
-        sid, session = self.get_session()
-        if not session.get('siteAuthed'):
-            self.redirect('/', sid)
-            return None, None
-        return sid, session
+def redirect(start_response, location, sid=None):
+    headers = [('Location', location)]
+    if sid:
+        headers.append(('Set-Cookie', f'sid={sid}; HttpOnly; Path=/; SameSite=Lax'))
+    start_response('302 Found', headers)
+    return [b'']
 
-    def require_admin_auth(self):
-        sid, session = self.get_session()
-        if not session.get('adminAuthed'):
-            self.redirect('/admin/login', sid)
-            return None, None
-        return sid, session
 
-    def login_page(self, parsed):
-        sid, session = self.get_session()
-        if session.get('siteAuthed'):
-            return self.redirect('/notes', sid)
+def require_site(session_data, start_response, sid):
+    if not session_data.get('siteAuthed'):
+        return redirect(start_response, '/', sid)
+    return None
 
-        params = parse_qs(parsed.query)
-        error = '<p class="error">Неверный пароль сайта</p>' if 'error' in params else ''
-        body = f'''
-<section class="card">
+
+def require_admin(session_data, start_response, sid):
+    if not session_data.get('adminAuthed'):
+        return redirect(start_response, '/admin/login', sid)
+    return None
+
+
+def app(environ, start_response):
+    ensure_store()
+    path = environ.get('PATH_INFO', '/')
+    method = environ.get('REQUEST_METHOD', 'GET').upper()
+    query = parse_qs(environ.get('QUERY_STRING', ''))
+
+    sid, session_data, _ = get_session(environ)
+    cookie_header = [('Set-Cookie', f'sid={sid}; HttpOnly; Path=/; SameSite=Lax')]
+
+    if path == '/static/style.css' and method == 'GET':
+        if not STATIC_STYLE.exists():
+            return response(start_response, b'Not found', '404 Not Found')
+        content = STATIC_STYLE.read_bytes()
+        start_response('200 OK', [('Content-Type', 'text/css; charset=utf-8'), ('Content-Length', str(len(content)))])
+        return [content]
+
+    if path == '/' and method == 'GET':
+        if session_data.get('siteAuthed'):
+            return redirect(start_response, '/notes', sid)
+        error = '<p class="error">Неверный пароль сайта</p>' if 'error' in query else ''
+        body = page(
+            'Вход в NoteFlux',
+            f'''<section class="card">
   <h1>Добро пожаловать в NoteFlux</h1>
   <p>Введите пароль сайта, чтобы открыть заметки.</p>
   {error}
@@ -173,50 +134,41 @@ class NoteFluxHandler(BaseHTTPRequestHandler):
     <button type="submit">Войти</button>
   </form>
   <a class="link" href="/admin/login">Вход в админ панель</a>
-</section>
-'''
-        self.send_html(page('Вход в NoteFlux', body), sid)
+</section>''',
+        )
+        return response(start_response, body, headers=cookie_header)
 
-    def login_action(self, form):
-        sid, session = self.get_session()
+    if path == '/login' and method == 'POST':
+        form = read_form(environ)
+        if form.get('password') == read_store()['sitePassword']:
+            session_data['siteAuthed'] = True
+            return redirect(start_response, '/notes', sid)
+        return redirect(start_response, '/?error=1', sid)
+
+    if path == '/logout' and method == 'POST':
+        session_data['siteAuthed'] = False
+        return redirect(start_response, '/', sid)
+
+    if path == '/notes' and method == 'GET':
+        blocked = require_site(session_data, start_response, sid)
+        if blocked:
+            return blocked
         store = read_store()
-        if form.get('password', '') == store['sitePassword']:
-            session['siteAuthed'] = True
-            self.redirect('/notes', sid)
-            return
-        self.redirect('/?error=1', sid)
-
-    def logout_action(self):
-        sid, session = self.get_session()
-        session['siteAuthed'] = False
-        self.redirect('/', sid)
-
-    def notes_page(self):
-        sid, _ = self.require_site_auth()
-        if not sid:
-            return
-
-        store = read_store()
-        notes_html = []
+        cards = []
         for note in store['notes']:
-            title = html.escape(note['title'])
-            content = html.escape(note['content'])
-            updated = datetime.fromisoformat(note['updatedAt']).strftime('%d.%m.%Y %H:%M:%S')
-            notes_html.append(f'''
-<article class="note-card">
+            cards.append(f'''<article class="note-card">
   <form method="POST" action="/notes/{note['id']}/save" class="stack">
-    <input name="title" value="{title}" required />
-    <textarea name="content" rows="8" placeholder="Текст заметки...">{content}</textarea>
+    <input name="title" value="{html.escape(note['title'])}" required />
+    <textarea name="content" rows="8" placeholder="Текст заметки...">{html.escape(note['content'])}</textarea>
     <div class="between">
-      <small>Обновлено: {updated}</small>
+      <small>Обновлено: {datetime.fromisoformat(note['updatedAt']).strftime('%d.%m.%Y %H:%M:%S')}</small>
       <button type="submit">Сохранить</button>
     </div>
   </form>
-</article>
-''')
-
-        body = f'''
-<section class="card">
+</article>''')
+        body = page(
+            'Ваши заметки',
+            f'''<section class="card">
   <div class="between">
     <h1>Ваши заметки</h1>
     <form method="POST" action="/logout"><button class="secondary" type="submit">Выйти</button></form>
@@ -225,54 +177,51 @@ class NoteFluxHandler(BaseHTTPRequestHandler):
     <input name="title" placeholder="Название новой заметки" required />
     <button type="submit">Открыть заметку</button>
   </form>
-  <div class="notes-grid">{''.join(notes_html) if notes_html else '<p>Пока нет заметок. Создайте первую.</p>'}</div>
-</section>
-'''
-        self.send_html(page('Ваши заметки', body), sid)
+  <div class="notes-grid">{''.join(cards) if cards else '<p>Пока нет заметок. Создайте первую.</p>'}</div>
+</section>''',
+        )
+        return response(start_response, body, headers=cookie_header)
 
-    def new_note_action(self, form):
-        sid, _ = self.require_site_auth()
-        if not sid:
-            return
-
-        title = form.get('title', '').strip() or 'Без названия'
+    if path == '/notes/new' and method == 'POST':
+        blocked = require_site(session_data, start_response, sid)
+        if blocked:
+            return blocked
+        form = read_form(environ)
         store = read_store()
         store['notes'].append(
             {
                 'id': secrets.token_hex(6),
-                'title': title,
+                'title': form.get('title', '').strip() or 'Без названия',
                 'content': '',
                 'updatedAt': datetime.now().isoformat(),
             }
         )
         write_store(store)
-        self.redirect('/notes', sid)
+        return redirect(start_response, '/notes', sid)
 
-    def save_note_action(self, path, form):
-        sid, _ = self.require_site_auth()
-        if not sid:
-            return
-
+    if path.startswith('/notes/') and path.endswith('/save') and method == 'POST':
+        blocked = require_site(session_data, start_response, sid)
+        if blocked:
+            return blocked
         note_id = path.split('/')[2]
+        form = read_form(environ)
         store = read_store()
         for note in store['notes']:
             if note['id'] == note_id:
-                note['title'] = (form.get('title', '').strip() or 'Без названия')
+                note['title'] = form.get('title', '').strip() or 'Без названия'
                 note['content'] = form.get('content', '')
                 note['updatedAt'] = datetime.now().isoformat()
                 break
         write_store(store)
-        self.redirect('/notes', sid)
+        return redirect(start_response, '/notes', sid)
 
-    def admin_login_page(self, parsed):
-        sid, session = self.get_session()
-        if session.get('adminAuthed'):
-            return self.redirect('/admin', sid)
-
-        params = parse_qs(parsed.query)
-        error = '<p class="error">Неверный пароль админ панели</p>' if 'error' in params else ''
-        body = f'''
-<section class="card">
+    if path == '/admin/login' and method == 'GET':
+        if session_data.get('adminAuthed'):
+            return redirect(start_response, '/admin', sid)
+        error = '<p class="error">Неверный пароль админ панели</p>' if 'error' in query else ''
+        body = page(
+            'Вход в админ панель',
+            f'''<section class="card">
   <h1>Админ панель</h1>
   <p>Введите пароль админ панели.</p>
   {error}
@@ -281,47 +230,40 @@ class NoteFluxHandler(BaseHTTPRequestHandler):
     <button type="submit">Войти в админ панель</button>
   </form>
   <a class="link" href="/">Назад ко входу</a>
-</section>
-'''
-        self.send_html(page('Вход в админ панель', body), sid)
+</section>''',
+        )
+        return response(start_response, body, headers=cookie_header)
 
-    def admin_login_action(self, form):
-        sid, session = self.get_session()
-        store = read_store()
-        if form.get('password', '') == store['adminPassword']:
-            session['adminAuthed'] = True
-            self.redirect('/admin', sid)
-            return
-        self.redirect('/admin/login?error=1', sid)
+    if path == '/admin/login' and method == 'POST':
+        form = read_form(environ)
+        if form.get('password') == read_store()['adminPassword']:
+            session_data['adminAuthed'] = True
+            return redirect(start_response, '/admin', sid)
+        return redirect(start_response, '/admin/login?error=1', sid)
 
-    def admin_logout_action(self):
-        sid, session = self.get_session()
-        session['adminAuthed'] = False
-        self.redirect('/admin/login', sid)
+    if path == '/admin/logout' and method == 'POST':
+        session_data['adminAuthed'] = False
+        return redirect(start_response, '/admin/login', sid)
 
-    def admin_page(self):
-        sid, _ = self.require_admin_auth()
-        if not sid:
-            return
-
+    if path == '/admin' and method == 'GET':
+        blocked = require_admin(session_data, start_response, sid)
+        if blocked:
+            return blocked
         store = read_store()
         rows = []
         for note in store['notes']:
-            title = html.escape(note['title'])
-            updated = datetime.fromisoformat(note['updatedAt']).strftime('%d.%m.%Y %H:%M:%S')
-            rows.append(f'''
-<tr>
-  <td>{title}</td>
-  <td>{updated}</td>
+            rows.append(f'''<tr>
+  <td>{html.escape(note['title'])}</td>
+  <td>{datetime.fromisoformat(note['updatedAt']).strftime('%d.%m.%Y %H:%M:%S')}</td>
   <td>
     <form method="POST" action="/admin/delete/{note['id']}">
       <button class="danger" type="submit">Удалить</button>
     </form>
   </td>
 </tr>''')
-
-        body = f'''
-<section class="card">
+        body = page(
+            'Управление NoteFlux',
+            f'''<section class="card">
   <div class="between">
     <h1>Админ панель</h1>
     <form method="POST" action="/admin/logout"><button class="secondary" type="submit">Выйти</button></form>
@@ -346,50 +288,49 @@ class NoteFluxHandler(BaseHTTPRequestHandler):
       <button type="submit">Сохранить пароль админ панели</button>
     </form>
   </div>
-</section>
-'''
-        self.send_html(page('Управление NoteFlux', body), sid)
+</section>''',
+        )
+        return response(start_response, body, headers=cookie_header)
 
-    def admin_delete_note_action(self, path):
-        sid, _ = self.require_admin_auth()
-        if not sid:
-            return
-
+    if path.startswith('/admin/delete/') and method == 'POST':
+        blocked = require_admin(session_data, start_response, sid)
+        if blocked:
+            return blocked
         note_id = path.split('/')[-1]
         store = read_store()
         store['notes'] = [n for n in store['notes'] if n['id'] != note_id]
         write_store(store)
-        self.redirect('/admin', sid)
+        return redirect(start_response, '/admin', sid)
 
-    def admin_change_site_password(self, form):
-        sid, _ = self.require_admin_auth()
-        if not sid:
-            return
+    if path == '/admin/change-site-password' and method == 'POST':
+        blocked = require_admin(session_data, start_response, sid)
+        if blocked:
+            return blocked
+        form = read_form(environ)
         value = form.get('newPassword', '').strip()
         if value:
             store = read_store()
             store['sitePassword'] = value
             write_store(store)
-        self.redirect('/admin', sid)
+        return redirect(start_response, '/admin', sid)
 
-    def admin_change_admin_password(self, form):
-        sid, _ = self.require_admin_auth()
-        if not sid:
-            return
+    if path == '/admin/change-admin-password' and method == 'POST':
+        blocked = require_admin(session_data, start_response, sid)
+        if blocked:
+            return blocked
+        form = read_form(environ)
         value = form.get('newPassword', '').strip()
         if value:
             store = read_store()
             store['adminPassword'] = value
             write_store(store)
-        self.redirect('/admin', sid)
+        return redirect(start_response, '/admin', sid)
 
-    def log_message(self, fmt, *args):
-        pass
+    return response(start_response, b'Not found', '404 Not Found')
 
 
 if __name__ == '__main__':
     ensure_store()
-    print(f'NoteFlux running on http://localhost:{PORT}')
-    print('Site password: 1234 | Admin password: admin123')
-    server = ThreadingHTTPServer((HOST, PORT), NoteFluxHandler)
-    server.serve_forever()
+    with make_server('0.0.0.0', PORT, app) as server:
+        print(f'NoteFlux running on http://localhost:{PORT}')
+        server.serve_forever()
