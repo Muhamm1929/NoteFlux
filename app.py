@@ -1,3 +1,6 @@
+import base64
+import hashlib
+import hmac
 import html
 import json
 import os
@@ -12,8 +15,8 @@ DATA_DIR = BASE_DIR / 'data'
 STORE_PATH = DATA_DIR / 'store.json'
 STATIC_STYLE = BASE_DIR / 'static' / 'style.css'
 PORT = int(os.getenv('PORT', '3000'))
+SESSION_SECRET = os.getenv('SESSION_SECRET', 'noteflux-change-this-secret')
 
-sessions = {}
 memory_store = None
 
 
@@ -24,6 +27,7 @@ def default_store():
 def normalize_store(store):
     if not isinstance(store, dict):
         return default_store()
+
     normalized = default_store()
     normalized['sitePassword'] = str(store.get('sitePassword', normalized['sitePassword']))
     normalized['adminPassword'] = str(store.get('adminPassword', normalized['adminPassword']))
@@ -55,7 +59,6 @@ def ensure_store():
         if not STORE_PATH.exists():
             STORE_PATH.write_text(json.dumps(default_store(), ensure_ascii=False, indent=2), encoding='utf-8')
     except OSError:
-        # На serverless окружениях файловая система может быть read-only.
         pass
 
 
@@ -86,7 +89,6 @@ def write_store(data):
         DATA_DIR.mkdir(parents=True, exist_ok=True)
         STORE_PATH.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding='utf-8')
     except OSError:
-        # Если запись на диск недоступна, продолжаем работать в памяти.
         pass
 
 
@@ -119,13 +121,39 @@ def parse_cookies(environ):
     return {k.strip(): v.strip() for k, v in (p.split('=', 1) for p in pairs)}
 
 
+def b64_url_encode(raw):
+    return base64.urlsafe_b64encode(raw).decode('utf-8').rstrip('=')
+
+
+def b64_url_decode(value):
+    padding = '=' * (-len(value) % 4)
+    return base64.urlsafe_b64decode((value + padding).encode('utf-8'))
+
+
+def sign_payload(payload):
+    return hmac.new(SESSION_SECRET.encode('utf-8'), payload.encode('utf-8'), hashlib.sha256).hexdigest()
+
+
 def get_session(environ):
-    sid = parse_cookies(environ).get('sid')
-    if sid in sessions:
-        return sid, sessions[sid], False
-    sid = secrets.token_hex(16)
-    sessions[sid] = {'siteAuthed': False, 'adminAuthed': False}
-    return sid, sessions[sid], True
+    raw = parse_cookies(environ).get('sid', '')
+    if raw and '.' in raw:
+        payload, signature = raw.split('.', 1)
+        if hmac.compare_digest(sign_payload(payload), signature):
+            try:
+                data = json.loads(b64_url_decode(payload).decode('utf-8'))
+                return {
+                    'siteAuthed': bool(data.get('siteAuthed', False)),
+                    'adminAuthed': bool(data.get('adminAuthed', False)),
+                }
+            except (json.JSONDecodeError, ValueError):
+                pass
+    return {'siteAuthed': False, 'adminAuthed': False}
+
+
+def make_session_cookie(session_data):
+    payload = b64_url_encode(json.dumps(session_data, separators=(',', ':')).encode('utf-8'))
+    signature = sign_payload(payload)
+    return f'sid={payload}.{signature}; HttpOnly; Path=/; SameSite=Lax'
 
 
 def read_form(environ):
@@ -146,23 +174,25 @@ def response(start_response, body, status='200 OK', headers=None, content_type='
     return [body]
 
 
-def redirect(start_response, location, sid=None):
+def redirect(start_response, location, session_data=None):
     headers = [('Location', location)]
-    if sid:
-        headers.append(('Set-Cookie', f'sid={sid}; HttpOnly; Path=/; SameSite=Lax'))
+    if session_data is not None:
+        headers.append(('Set-Cookie', make_session_cookie(session_data)))
     start_response('302 Found', headers)
     return [b'']
 
 
-def require_site(session_data, start_response, sid):
+def require_site(session_data, start_response):
     if not session_data.get('siteAuthed'):
-        return redirect(start_response, '/', sid)
+        return redirect(start_response, '/', session_data)
     return None
 
 
-def require_admin(session_data, start_response, sid):
+def require_admin(session_data, start_response):
+    if not session_data.get('siteAuthed'):
+        return redirect(start_response, '/', session_data)
     if not session_data.get('adminAuthed'):
-        return redirect(start_response, '/admin/login', sid)
+        return redirect(start_response, '/admin/login', session_data)
     return None
 
 
@@ -179,8 +209,8 @@ def app(environ, start_response):
         method = environ.get('REQUEST_METHOD', 'GET').upper()
         query = parse_qs(environ.get('QUERY_STRING', ''))
 
-        sid, session_data, _ = get_session(environ)
-        cookie_header = [('Set-Cookie', f'sid={sid}; HttpOnly; Path=/; SameSite=Lax')]
+        session_data = get_session(environ)
+        cookie_header = [('Set-Cookie', make_session_cookie(session_data))]
 
         if path == '/static/style.css' and method == 'GET':
             if not STATIC_STYLE.exists():
@@ -190,7 +220,7 @@ def app(environ, start_response):
 
         if path == '/' and method == 'GET':
             if session_data.get('siteAuthed'):
-                return redirect(start_response, '/notes', sid)
+                return redirect(start_response, '/notes', session_data)
             error = '<p class="error">Неверный пароль сайта</p>' if 'error' in query else ''
             body = page(
                 'Вход в NoteFlux',
@@ -202,7 +232,6 @@ def app(environ, start_response):
     <input type="password" name="password" placeholder="Пароль сайта" required />
     <button type="submit">Войти</button>
   </form>
-  <a class="link" href="/admin/login">Вход в админ панель</a>
 </section>''',
             )
             return response(start_response, body, headers=cookie_header)
@@ -211,15 +240,16 @@ def app(environ, start_response):
             form = read_form(environ)
             if form.get('password') == read_store()['sitePassword']:
                 session_data['siteAuthed'] = True
-                return redirect(start_response, '/notes', sid)
-            return redirect(start_response, '/?error=1', sid)
+                return redirect(start_response, '/notes', session_data)
+            return redirect(start_response, '/?error=1', session_data)
 
         if path == '/logout' and method == 'POST':
             session_data['siteAuthed'] = False
-            return redirect(start_response, '/', sid)
+            session_data['adminAuthed'] = False
+            return redirect(start_response, '/', session_data)
 
         if path == '/notes' and method == 'GET':
-            blocked = require_site(session_data, start_response, sid)
+            blocked = require_site(session_data, start_response)
             if blocked:
                 return blocked
             store = read_store()
@@ -257,14 +287,13 @@ def app(environ, start_response):
             return response(start_response, body, headers=cookie_header)
 
         if path == '/notes/new' and method == 'GET':
-            # Защита от случайного перехода по GET (например, из кэша/редиректов).
-            blocked = require_site(session_data, start_response, sid)
+            blocked = require_site(session_data, start_response)
             if blocked:
                 return blocked
-            return redirect(start_response, '/notes', sid)
+            return redirect(start_response, '/notes', session_data)
 
         if path == '/notes/new' and method == 'POST':
-            blocked = require_site(session_data, start_response, sid)
+            blocked = require_site(session_data, start_response)
             if blocked:
                 return blocked
             form = read_form(environ)
@@ -278,10 +307,10 @@ def app(environ, start_response):
                 }
             )
             write_store(store)
-            return redirect(start_response, '/notes', sid)
+            return redirect(start_response, '/notes', session_data)
 
         if path.startswith('/notes/') and path.endswith('/save') and method == 'POST':
-            blocked = require_site(session_data, start_response, sid)
+            blocked = require_site(session_data, start_response)
             if blocked:
                 return blocked
             note_id = path.split('/')[2]
@@ -294,11 +323,14 @@ def app(environ, start_response):
                     note['updatedAt'] = datetime.now().isoformat()
                     break
             write_store(store)
-            return redirect(start_response, '/notes', sid)
+            return redirect(start_response, '/notes', session_data)
 
         if path == '/admin/login' and method == 'GET':
+            blocked = require_site(session_data, start_response)
+            if blocked:
+                return blocked
             if session_data.get('adminAuthed'):
-                return redirect(start_response, '/admin', sid)
+                return redirect(start_response, '/admin', session_data)
             error = '<p class="error">Неверный пароль админ панели</p>' if 'error' in query else ''
             body = page(
                 'Вход в админ панель',
@@ -310,24 +342,27 @@ def app(environ, start_response):
     <input type="password" name="password" placeholder="Пароль админ панели" required />
     <button type="submit">Войти в админ панель</button>
   </form>
-  <a class="link" href="/">Назад ко входу</a>
+  <a class="link" href="/notes">Назад к заметкам</a>
 </section>''',
             )
             return response(start_response, body, headers=cookie_header)
 
         if path == '/admin/login' and method == 'POST':
+            blocked = require_site(session_data, start_response)
+            if blocked:
+                return blocked
             form = read_form(environ)
             if form.get('password') == read_store()['adminPassword']:
                 session_data['adminAuthed'] = True
-                return redirect(start_response, '/admin', sid)
-            return redirect(start_response, '/admin/login?error=1', sid)
+                return redirect(start_response, '/admin', session_data)
+            return redirect(start_response, '/admin/login?error=1', session_data)
 
         if path == '/admin/logout' and method == 'POST':
             session_data['adminAuthed'] = False
-            return redirect(start_response, '/admin/login', sid)
+            return redirect(start_response, '/admin/login', session_data)
 
         if path == '/admin' and method == 'GET':
-            blocked = require_admin(session_data, start_response, sid)
+            blocked = require_admin(session_data, start_response)
             if blocked:
                 return blocked
             store = read_store()
@@ -376,17 +411,17 @@ def app(environ, start_response):
             return response(start_response, body, headers=cookie_header)
 
         if path.startswith('/admin/delete/') and method == 'POST':
-            blocked = require_admin(session_data, start_response, sid)
+            blocked = require_admin(session_data, start_response)
             if blocked:
                 return blocked
             note_id = path.split('/')[-1]
             store = read_store()
             store['notes'] = [n for n in store['notes'] if n['id'] != note_id]
             write_store(store)
-            return redirect(start_response, '/admin', sid)
+            return redirect(start_response, '/admin', session_data)
 
         if path == '/admin/change-site-password' and method == 'POST':
-            blocked = require_admin(session_data, start_response, sid)
+            blocked = require_admin(session_data, start_response)
             if blocked:
                 return blocked
             form = read_form(environ)
@@ -395,10 +430,10 @@ def app(environ, start_response):
                 store = read_store()
                 store['sitePassword'] = value
                 write_store(store)
-            return redirect(start_response, '/admin', sid)
+            return redirect(start_response, '/admin', session_data)
 
         if path == '/admin/change-admin-password' and method == 'POST':
-            blocked = require_admin(session_data, start_response, sid)
+            blocked = require_admin(session_data, start_response)
             if blocked:
                 return blocked
             form = read_form(environ)
@@ -407,7 +442,7 @@ def app(environ, start_response):
                 store = read_store()
                 store['adminPassword'] = value
                 write_store(store)
-            return redirect(start_response, '/admin', sid)
+            return redirect(start_response, '/admin', session_data)
 
         return response(start_response, b'Not found', '404 Not Found')
 
