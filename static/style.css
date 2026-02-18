@@ -3,6 +3,7 @@
   --panel: #1b1710;
   --panel-2: #231d13;
   --gold: #d4af37;
+  --gold-strong: #ffd56a;
   --text: #f0dfad;
   --danger: #a73c2f;
 }
@@ -18,7 +19,7 @@ body {
   flex-direction: column;
   position: relative;
   overflow-x: hidden;
-  background: radial-gradient(circle at 50% -10%, rgba(212, 175, 55, 0.22), transparent 40%),
+  background: radial-gradient(circle at 50% -10%, rgba(212, 175, 55, 0.24), transparent 40%),
     radial-gradient(circle at top, #241c10, var(--bg));
   color: var(--text);
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -30,7 +31,7 @@ body::after {
   position: fixed;
   z-index: -1;
   pointer-events: none;
-  filter: blur(55px);
+  filter: blur(60px);
 }
 
 body::before {
@@ -61,6 +62,7 @@ body::after {
   border-radius: 14px;
   padding: 1.2rem;
   box-shadow: 0 0 26px rgba(0, 0, 0, 0.35), 0 0 30px rgba(212, 175, 55, 0.1);
+  animation: fadeUp 0.45s ease;
 }
 
 h1,
@@ -79,15 +81,35 @@ h2 {
   align-items: center;
 }
 
+.top-controls {
+  margin-bottom: 0.7rem;
+}
+
+.actions-row {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex-wrap: wrap;
+}
+
 input,
 textarea,
-button {
-  border-radius: 8px;
+button,
+.admin-entry {
+  border-radius: 10px;
   border: 1px solid #70541d;
   background: #120f0b;
   color: var(--text);
-  padding: 0.7rem;
+  padding: 0.72rem;
   font-size: 0.98rem;
+  transition: transform 0.22s ease, box-shadow 0.25s ease, filter 0.2s ease, border-color 0.25s ease;
+}
+
+input:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--gold);
+  box-shadow: 0 0 0 2px rgba(212, 175, 55, 0.2);
 }
 
 textarea {
@@ -99,10 +121,35 @@ button {
   background: linear-gradient(90deg, #7b5a20, #a17b2a);
   color: #f7e7ba;
   font-weight: 600;
+  position: relative;
+  overflow: hidden;
 }
 
-button:hover {
-  filter: brightness(1.1);
+button::after {
+  content: '';
+  position: absolute;
+  left: -120%;
+  top: 0;
+  width: 70%;
+  height: 100%;
+  transform: skewX(-20deg);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.25), transparent);
+  transition: left 0.45s ease;
+}
+
+button:hover,
+.admin-entry:hover {
+  transform: translateY(-2px) scale(1.01);
+  filter: brightness(1.08);
+}
+
+button:hover::after {
+  left: 150%;
+}
+
+button:active,
+.admin-entry:active {
+  transform: translateY(0) scale(0.99);
 }
 
 .secondary {
@@ -111,6 +158,19 @@ button:hover {
 
 .danger {
   background: var(--danger);
+}
+
+.admin-entry {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  font-weight: 700;
+  color: #ffe6a8;
+  background: linear-gradient(120deg, rgba(212, 175, 55, 0.25), rgba(255, 213, 106, 0.15));
+  border-color: rgba(255, 213, 106, 0.7);
+  box-shadow: 0 0 0 1px rgba(255, 213, 106, 0.18), 0 0 14px rgba(212, 175, 55, 0.35);
+  animation: glowPulse 2.4s ease-in-out infinite;
 }
 
 .notes-grid {
@@ -125,6 +185,13 @@ button:hover {
   border: 1px solid #4e3e1f;
   border-radius: 10px;
   padding: 0.8rem;
+  transition: transform 0.22s ease, box-shadow 0.3s ease, border-color 0.3s ease;
+}
+
+.note-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(255, 213, 106, 0.7);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.22), 0 0 20px rgba(212, 175, 55, 0.14);
 }
 
 .between {
@@ -174,6 +241,29 @@ footer {
   padding: 0.4rem 0 1rem;
 }
 
+@keyframes glowPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 1px rgba(255, 213, 106, 0.2), 0 0 12px rgba(212, 175, 55, 0.35);
+  }
+
+  50% {
+    box-shadow: 0 0 0 1px rgba(255, 213, 106, 0.42), 0 0 24px rgba(255, 213, 106, 0.5);
+  }
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @media (max-width: 720px) {
   .inline-form {
     grid-template-columns: 1fr;
@@ -181,5 +271,9 @@ footer {
 
   .between {
     flex-wrap: wrap;
+  }
+
+  .actions-row {
+    width: 100%;
   }
 }
