@@ -214,6 +214,13 @@ button:active,
   color: #ff8585;
 }
 
+.hint {
+  margin: 0.4rem 0 0.9rem;
+  color: #f5cf71;
+  font-size: 0.9rem;
+  opacity: 0.92;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;

@@ -7,6 +7,8 @@ import os
 import secrets
 from datetime import datetime
 from pathlib import Path
+from urllib import error as url_error
+from urllib import request as url_request
 from urllib.parse import parse_qs
 from wsgiref.simple_server import make_server
 
@@ -16,6 +18,10 @@ STORE_PATH = DATA_DIR / 'store.json'
 STATIC_STYLE = BASE_DIR / 'static' / 'style.css'
 PORT = int(os.getenv('PORT', '3000'))
 SESSION_SECRET = os.getenv('SESSION_SECRET', 'noteflux-change-this-secret')
+
+KV_REST_API_URL = os.getenv('KV_REST_API_URL', '').strip()
+KV_REST_API_TOKEN = os.getenv('KV_REST_API_TOKEN', '').strip()
+KV_STORE_KEY = os.getenv('NOTES_STORE_KEY', 'noteflux:store')
 
 memory_store = None
 
@@ -62,10 +68,56 @@ def ensure_store():
         pass
 
 
+def kv_enabled():
+    return bool(KV_REST_API_URL and KV_REST_API_TOKEN)
+
+
+def kv_request(path, payload=None):
+    url = f"{KV_REST_API_URL.rstrip('/')}/{path.lstrip('/')}"
+    body = None
+    headers = {'Authorization': f'Bearer {KV_REST_API_TOKEN}'}
+
+    if payload is not None:
+        body = json.dumps(payload).encode('utf-8')
+        headers['Content-Type'] = 'application/json'
+
+    req = url_request.Request(url=url, method='POST' if payload is not None else 'GET', data=body, headers=headers)
+    with url_request.urlopen(req, timeout=8) as response:
+        text = response.read().decode('utf-8')
+        if not text:
+            return {}
+        return json.loads(text)
+
+
+def read_store_kv():
+    try:
+        data = kv_request(f'get/{KV_STORE_KEY}')
+        raw = data.get('result')
+        if not raw:
+            return None
+        return normalize_store(json.loads(raw))
+    except (url_error.URLError, url_error.HTTPError, TimeoutError, json.JSONDecodeError, ValueError):
+        return None
+
+
+def write_store_kv(store):
+    try:
+        kv_request(f'set/{KV_STORE_KEY}', [json.dumps(normalize_store(store), ensure_ascii=False)])
+        return True
+    except (url_error.URLError, url_error.HTTPError, TimeoutError):
+        return False
+
+
 def read_store():
     global memory_store
-    ensure_store()
 
+    if kv_enabled():
+        kv_data = read_store_kv()
+        if kv_data is not None:
+            memory_store = kv_data
+            return kv_data
+
+    ensure_store()
     try:
         if STORE_PATH.exists():
             data = json.loads(STORE_PATH.read_text(encoding='utf-8'))
@@ -84,6 +136,9 @@ def write_store(data):
     global memory_store
     normalized = normalize_store(data)
     memory_store = normalized
+
+    if kv_enabled() and write_store_kv(normalized):
+        return
 
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -267,6 +322,9 @@ def app(environ, start_response):
   </form>
 </article>'''
                 )
+            storage_hint = ''
+            if not kv_enabled():
+                storage_hint = '<p class="hint">⚠️ Для стабильной работы на Vercel подключите KV_REST_API_URL и KV_REST_API_TOKEN.</p>'
             body = page(
                 'Ваши заметки',
                 f'''<section class="card">
@@ -277,6 +335,7 @@ def app(environ, start_response):
       <form method="POST" action="/logout"><button class="secondary" type="submit">Выйти</button></form>
     </div>
   </div>
+  {storage_hint}
   <form method="POST" action="/notes/new" class="stack inline-form">
     <input name="title" placeholder="Название новой заметки" required />
     <button type="submit">Открыть заметку</button>
