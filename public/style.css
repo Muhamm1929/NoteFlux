@@ -1,0 +1,158 @@
+:root {
+  --bg: #0d0b08;
+  --panel: #1b1710;
+  --panel-2: #231d13;
+  --gold: #d4af37;
+  --gold-soft: #b9962f;
+  --text: #f0dfad;
+  --danger: #a73c2f;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: radial-gradient(circle at top, #241c10, var(--bg));
+  color: var(--text);
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+.container {
+  width: min(1100px, 92%);
+  margin: 2rem auto;
+  flex: 1;
+}
+
+.card {
+  background: linear-gradient(180deg, var(--panel), var(--panel-2));
+  border: 1px solid #3f3218;
+  border-radius: 14px;
+  padding: 1.2rem;
+  box-shadow: 0 0 26px rgba(0, 0, 0, 0.35);
+}
+
+h1,
+h2 {
+  color: var(--gold);
+  margin-top: 0;
+}
+
+.stack {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.inline-form {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+}
+
+input,
+textarea,
+button {
+  border-radius: 8px;
+  border: 1px solid #70541d;
+  background: #120f0b;
+  color: var(--text);
+  padding: 0.7rem;
+  font-size: 0.98rem;
+}
+
+textarea {
+  resize: vertical;
+}
+
+button {
+  cursor: pointer;
+  background: linear-gradient(90deg, #7b5a20, #a17b2a);
+  color: #f7e7ba;
+  font-weight: 600;
+}
+
+button:hover {
+  filter: brightness(1.1);
+}
+
+.secondary {
+  background: #312814;
+}
+
+.danger {
+  background: var(--danger);
+}
+
+.notes-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.note-card {
+  background: #151108;
+  border: 1px solid #4e3e1f;
+  border-radius: 10px;
+  padding: 0.8rem;
+}
+
+.between {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.link {
+  color: var(--gold);
+  text-decoration: none;
+}
+
+.link:hover {
+  text-decoration: underline;
+}
+
+.error {
+  color: #ff8585;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 1rem;
+}
+
+th,
+td {
+  border: 1px solid #53451f;
+  padding: 0.6rem;
+  text-align: left;
+}
+
+.admin-forms {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 1rem;
+}
+
+footer {
+  text-align: center;
+  color: var(--gold);
+  opacity: 0.85;
+  font-size: 0.72rem;
+  padding: 0.4rem 0 1rem;
+}
+
+@media (max-width: 720px) {
+  .inline-form {
+    grid-template-columns: 1fr;
+  }
+
+  .between {
+    flex-wrap: wrap;
+  }
+}
