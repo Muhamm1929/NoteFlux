@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib import error as url_error
 from urllib import request as url_request
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 from wsgiref.simple_server import make_server
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -80,7 +80,7 @@ def kv_enabled():
     return bool(KV_REST_API_URL and KV_REST_API_TOKEN)
 
 
-def kv_request(path, payload=None):
+def kv_request(path, method='GET', payload=None):
     url = f"{KV_REST_API_URL.rstrip('/')}/{path.lstrip('/')}"
     body = None
     headers = {'Authorization': f'Bearer {KV_REST_API_TOKEN}'}
@@ -89,7 +89,7 @@ def kv_request(path, payload=None):
         body = json.dumps(payload).encode('utf-8')
         headers['Content-Type'] = 'application/json'
 
-    req = url_request.Request(url=url, method='POST' if payload is not None else 'GET', data=body, headers=headers)
+    req = url_request.Request(url=url, method=method, data=body, headers=headers)
     with url_request.urlopen(req, timeout=8) as response:
         text = response.read().decode('utf-8')
         if not text:
@@ -99,7 +99,7 @@ def kv_request(path, payload=None):
 
 def read_store_kv():
     try:
-        data = kv_request(f'get/{KV_STORE_KEY}')
+        data = kv_request(f"get/{quote(KV_STORE_KEY, safe='')}")
         raw = data.get('result')
         if not raw:
             return None
@@ -109,10 +109,23 @@ def read_store_kv():
 
 
 def write_store_kv(store):
+    normalized = normalize_store(store)
+    serialized = json.dumps(normalized, ensure_ascii=False)
+    encoded_key = quote(KV_STORE_KEY, safe='')
+
+    # Основной путь Upstash/Vercel KV REST: /set/{key}/{value}
     try:
-        kv_request(f'set/{KV_STORE_KEY}', [json.dumps(normalize_store(store), ensure_ascii=False)])
+        encoded_value = quote(serialized, safe='')
+        kv_request(f"set/{encoded_key}/{encoded_value}")
         return True
-    except (url_error.URLError, url_error.HTTPError, TimeoutError):
+    except (url_error.URLError, url_error.HTTPError, TimeoutError, ValueError):
+        pass
+
+    # Fallback для совместимости с другими REST-форматами
+    try:
+        kv_request(f"set/{encoded_key}", method='POST', payload=[serialized])
+        return True
+    except (url_error.URLError, url_error.HTTPError, TimeoutError, ValueError):
         return False
 
 
