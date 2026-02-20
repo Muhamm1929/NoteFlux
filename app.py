@@ -19,8 +19,16 @@ STATIC_STYLE = BASE_DIR / 'static' / 'style.css'
 PORT = int(os.getenv('PORT', '3000'))
 SESSION_SECRET = os.getenv('SESSION_SECRET', 'noteflux-change-this-secret')
 
-KV_REST_API_URL = os.getenv('KV_REST_API_URL', '').strip()
-KV_REST_API_TOKEN = os.getenv('KV_REST_API_TOKEN', '').strip()
+KV_REST_API_URL = (
+    os.getenv('KV_REST_API_URL', '').strip()
+    or os.getenv('UPSTASH_REDIS_REST_URL', '').strip()
+    or os.getenv('UPSTASH_REST_URL', '').strip()
+)
+KV_REST_API_TOKEN = (
+    os.getenv('KV_REST_API_TOKEN', '').strip()
+    or os.getenv('UPSTASH_REDIS_REST_TOKEN', '').strip()
+    or os.getenv('UPSTASH_REST_TOKEN', '').strip()
+)
 KV_STORE_KEY = os.getenv('NOTES_STORE_KEY', 'noteflux:store')
 
 memory_store = None
@@ -324,7 +332,7 @@ def app(environ, start_response):
                 )
             storage_hint = ''
             if not kv_enabled():
-                storage_hint = '<p class="hint">⚠️ Для стабильной работы на Vercel подключите KV_REST_API_URL и KV_REST_API_TOKEN.</p>'
+                storage_hint = '<p class="hint">⚠️ Для стабильной работы на Vercel подключите Upstash (UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN) или KV_REST_API_URL / KV_REST_API_TOKEN.</p>'
             body = page(
                 'Ваши заметки',
                 f'''<section class="card">

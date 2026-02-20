@@ -24,10 +24,18 @@ python3 app.py
 
 ### Правильная настройка постоянного хранения
 
-Подключите **Vercel KV** и задайте переменные окружения в проекте Vercel:
+Если у вас не получается руками, делайте так:
 
-- `KV_REST_API_URL`
-- `KV_REST_API_TOKEN`
+1. В Vercel → **Storage** нажмите **Upstash** → **Create** → подключите к проекту.
+2. В большинстве случаев Upstash сам добавит env-переменные (`UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`).
+3. Нажмите **Redeploy** проекта.
+
+Приложение автоматически поддерживает **оба варианта** переменных:
+
+- `KV_REST_API_URL` / `KV_REST_API_TOKEN`
+- или `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN`
+
+Дополнительно:
 - `NOTES_STORE_KEY` (опционально, по умолчанию `noteflux:store`)
 - `SESSION_SECRET` (обязательно свой секрет)
 
